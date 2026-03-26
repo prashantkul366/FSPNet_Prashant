@@ -119,29 +119,61 @@ class TrainDataset(Dataset):
 
     def __getitem__(self, idx):
 
+        # img = np.load(os.path.join(self.img_dir, self.files[idx])).astype(np.float32)
+        # mask = np.load(os.path.join(self.mask_dir, self.files[idx])).astype(np.float32)
+
+        # # -------- CHANNEL WISE NORMALIZATION --------
+        # for c in range(img.shape[2]):
+
+        #     mean = img[:,:,c].mean()
+        #     std  = img[:,:,c].std()
+
+        #     img[:,:,c] = (img[:,:,c] - mean) / (std + 1e-6)
+        # # ---------- VERY IMPORTANT ----------
+        # # fix channel order if stored wrongly
+        # # some numpy saved as C,H,W
+        # if img.shape[0] == 4:
+        #     img = np.transpose(img, (1,2,0))   # -> H W 4
+
+        # # # ---------- normalize hillshade ----------
+        # # img = (img - img.mean()) / (img.std() + 1e-6)
+
+        # # ---------- make binary mask ----------
+        # mask = (mask > 0).astype(np.float32)
+
+        # # ---------- tensor ----------
+        # img = torch.from_numpy(img).permute(2,0,1)   # 4 H W
+        # mask = torch.from_numpy(mask).unsqueeze(0)   # 1 H W
+
+        # # ---------- resize ----------
+        # img = F.interpolate(img.unsqueeze(0), (384,384), mode='bilinear', align_corners=False).squeeze(0)
+        # mask = F.interpolate(mask.unsqueeze(0), (384,384), mode='nearest').squeeze(0)
+
         img = np.load(os.path.join(self.img_dir, self.files[idx])).astype(np.float32)
         mask = np.load(os.path.join(self.mask_dir, self.files[idx])).astype(np.float32)
 
-        # ---------- VERY IMPORTANT ----------
-        # fix channel order if stored wrongly
-        # some numpy saved as C,H,W
+        # ⭐ FIRST fix layout
         if img.shape[0] == 4:
-            img = np.transpose(img, (1,2,0))   # -> H W 4
+            img = np.transpose(img, (1,2,0))   # H W C
 
-        # ---------- normalize hillshade ----------
-        img = (img - img.mean()) / (img.std() + 1e-6)
+        # ⭐ THEN channel-wise normalization
+        for c in range(img.shape[2]):
 
-        # ---------- make binary mask ----------
+            mean = img[:,:,c].mean()
+            std  = img[:,:,c].std()
+
+            img[:,:,c] = (img[:,:,c] - mean) / (std + 1e-6)
+
+        # binary mask
         mask = (mask > 0).astype(np.float32)
 
-        # ---------- tensor ----------
-        img = torch.from_numpy(img).permute(2,0,1)   # 4 H W
-        mask = torch.from_numpy(mask).unsqueeze(0)   # 1 H W
+        # tensor
+        img = torch.from_numpy(img).permute(2,0,1).float()
+        mask = torch.from_numpy(mask).unsqueeze(0).float()
 
-        # ---------- resize ----------
-        img = F.interpolate(img.unsqueeze(0), (384,384), mode='bilinear', align_corners=False).squeeze(0)
-        mask = F.interpolate(mask.unsqueeze(0), (384,384), mode='nearest').squeeze(0)
-
+        # resize
+        img = F.interpolate(img.unsqueeze(0),(384,384),mode="bilinear",align_corners=False).squeeze(0)
+        mask = F.interpolate(mask.unsqueeze(0),(384,384),mode="nearest").squeeze(0)
         return {"img": img, "label": mask}
     
     

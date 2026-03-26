@@ -11,7 +11,7 @@ import os
 # ---------- Dice ----------
 def dice_score(pred, mask):
 
-    pred = torch.sigmoid(pred)
+    # pred = torch.sigmoid(pred)
     pred = (pred > 0.5).float()
 
     inter = (pred * mask).sum()
