@@ -20,14 +20,36 @@ def dice_score(pred, mask):
     return (2*inter + 1e-6)/(union + 1e-6)
 
 
-# ---------- Validation ----------
+# # ---------- Validation ----------
+# def validate(model, loader):
+
+#     model.eval()
+#     dices = []
+
+#     with torch.no_grad():
+#         for b in loader:
+
+#             img = b["img"].cuda(non_blocking=True)
+#             mask = b["label"].cuda(non_blocking=True)
+
+#             out = model(img)[-1]
+
+#             d = dice_score(out, mask)
+#             dices.append(d.item())
+
+#     model.train()
+#     return sum(dices)/len(dices)
 def validate(model, loader):
 
     model.eval()
+
     dices = []
 
+    print("\n------ VALIDATION START ------")
+
     with torch.no_grad():
-        for b in loader:
+
+        for i, b in enumerate(loader):
 
             img = b["img"].cuda(non_blocking=True)
             mask = b["label"].cuda(non_blocking=True)
@@ -35,11 +57,25 @@ def validate(model, loader):
             out = model(img)[-1]
 
             d = dice_score(out, mask)
+
             dices.append(d.item())
 
-    model.train()
-    return sum(dices)/len(dices)
+            if i % 50 == 0:
+                print(
+                    f"Val iter {i}/{len(loader)}  "
+                    f"dice {d.item():.4f}  "
+                    f"pred_min {out.min().item():.3f}  "
+                    f"pred_max {out.max().item():.3f}"
+                )
 
+    mean_dice = sum(dices)/len(dices)
+
+    print("------ VALIDATION END ------")
+    print(f"Mean Dice : {mean_dice:.4f}\n")
+
+    model.train()
+
+    return mean_dice
 
 def main():
 
