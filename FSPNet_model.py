@@ -166,9 +166,14 @@ class OutPut(nn.Module):
 
 
 class Model(nn.Module):
-    def __init__(self, ckpt, img_size=384):
+    # def __init__(self, ckpt, img_size=384):
+    def __init__(self, ckpt=None, img_size=256):
         super(Model, self).__init__()
-        self.encoder = vit.deit_base_distilled_patch16_384()
+        # self.encoder = vit.deit_base_distilled_patch16_384()
+        self.encoder = vit.deit_base_distilled_patch16_384(
+                    img_size=256,
+                    in_chans=4
+            )
         if ckpt is not None:
             ckpt = torch.load(ckpt, map_location='cpu')
             msg = self.encoder.load_state_dict(ckpt["model"], strict=False)

@@ -34,7 +34,18 @@ def parse_args():
                         help='local rank for distributed training')
     args = parser.parse_args()
     return args
-                                         
+
+def dice_score(pred, gt):
+
+    pred = (pred > 0.5).float()
+
+    inter = (pred * gt).sum()
+    union = pred.sum() + gt.sum()
+
+    dice = (2 * inter + 1e-6) / (union + 1e-6)
+
+    return dice.item()
+                                      
 def main(args):
     # DDP setting
     if "WORLD_SIZE" in os.environ:
@@ -60,7 +71,7 @@ def main(args):
         builtins.print = print_pass
        
     ### model ###
-    net = FSPNet_model.Model(args.pretrain, img_size=384)
+    net = FSPNet_model.Model(args.pretrain, img_size=256)
     net = torch.nn.SyncBatchNorm.convert_sync_batchnorm(net)
     if args.distributed:
         # For multiprocessing distributed, DistributedDataParallel constructor
@@ -107,44 +118,132 @@ def main(args):
 
     
     ### data ###
-    Dir = [args.path]
-    Dataset = dataset.TrainDataset(Dir)
-    Datasampler = torch.utils.data.distributed.DistributedSampler(Dataset, shuffle=True)
-    Dataloader = DataLoader(Dataset, batch_size=args.batch_size_per_gpu, num_workers=args.batch_size_per_gpu, collate_fn=dataset.my_collate_fn, sampler=Datasampler, drop_last=True)
+    # Dir = [args.path]
+    # Dataset = dataset.TrainDataset(Dir)
+    # Datasampler = torch.utils.data.distributed.DistributedSampler(Dataset, shuffle=True)
+    # Dataloader = DataLoader(Dataset, batch_size=args.batch_size_per_gpu, num_workers=args.batch_size_per_gpu, collate_fn=dataset.my_collate_fn, sampler=Datasampler, drop_last=True)
+    
+    ### data ###
+
+    train_root = os.path.join(args.path, "train")
+    val_root   = os.path.join(args.path, "val")
+
+    train_set = dataset.TrainDataset(train_root)
+    val_set   = dataset.TrainDataset(val_root)
+
+    train_sampler = torch.utils.data.distributed.DistributedSampler(train_set, shuffle=True)
+    val_sampler   = torch.utils.data.distributed.DistributedSampler(val_set, shuffle=False)
+
+    train_loader = DataLoader(train_set,
+                            batch_size=args.batch_size_per_gpu,
+                            num_workers=4,
+                            collate_fn=dataset.my_collate_fn,
+                            sampler=train_sampler,
+                            drop_last=True)
+
+    val_loader = DataLoader(val_set,
+                            batch_size=args.batch_size_per_gpu,
+                            num_workers=4,
+                            collate_fn=dataset.my_collate_fn,
+                            sampler=val_sampler,
+                            drop_last=False)
     
     # torch.backends.cudnn.benchmark = True
     
     ### main loop ###
+    best_dice = 0
+    patience = 50
+    epochs_no_improve = 0
     star_time=time.time()
-    for curr_epoch in range(0, 201):
+    for curr_epoch in range(0, 1000):
         
         if curr_epoch==100 or curr_epoch==150:
             for param_group in optimizer.param_groups:
                 param_group['lr']= param_group['lr']*0.1
                 print("Learning rate:", param_group['lr'])
-        Datasampler.set_epoch(curr_epoch)
+        # Datasampler.set_epoch(curr_epoch)
+        train_sampler.set_epoch(curr_epoch)
         net.train()
         running_loss_all, running_loss_m = 0., 0.
         count = 0
-        for data in Dataloader:
+        for data in train_loader:
             count += 1
             img, label = data['img'].cuda(args.rank), data['label'].cuda(args.rank)
             out = net(img)
             all_loss, m_loss = loss.multi_bce(out, label)
             optimizer.zero_grad()
             all_loss.backward()
+            torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
             optimizer.step()
             running_loss_all += all_loss.item()
             running_loss_m += m_loss.item()
             if count % 20 == 0 and args.rank == 0:
                 print("Epoch:{}, Iter:{}, all_loss:{:.5f}, main_loss:{:.5f}".format(curr_epoch, count, running_loss_all / count, running_loss_m / count))
+
+        ################ VALIDATION ################
+        val_sampler.set_epoch(curr_epoch)
+        net.eval()
+
+        dice_total = 0
+        val_count = 0
+
+        with torch.no_grad():
+            for data in val_loader:
+
+                img = data['img'].cuda(args.rank)
+                label = data['label'].cuda(args.rank)
+
+                out = net(img)
+
+                pred = out[-1]
+
+                dice = dice_score(pred, label)
+
+                dice_total += dice
+                val_count += 1
+
+        val_dice = dice_total / val_count
+
+        val_dice_tensor = torch.tensor(val_dice).cuda(args.rank)
+        dist.all_reduce(val_dice_tensor)
+        val_dice = val_dice_tensor.item() / args.world_size
+
+        if args.rank == 0:
+            print(f"Epoch {curr_epoch} VAL Dice = {val_dice:.4f}")
+
+        ############ EARLY STOP ############
+
+        if curr_epoch < 20:
+            continue
+
+        if val_dice > best_dice:
+
+            best_dice = val_dice
+            epochs_no_improve = 0
+
+            if args.rank == 0:
+                print("Best model updated! Best dice:", best_dice)
+
+                torch.save(net.module.state_dict(),
+                        f"/path/best_model_{best_dice:.4f}.pth")
+
+        else:
+            epochs_no_improve += 1
+
+        if epochs_no_improve >= patience:
+
+            if args.rank == 0:
+                print("EARLY STOPPING TRIGGERED")
+
+            break
+
         if args.rank == 0 and curr_epoch % 2 == 0:
             ckpt_save_root = "/path_to_ckpt_save_root/ckpt_save"
             if not os.path.exists(ckpt_save_root):
                 os.mkdir(ckpt_save_root)
-            torch.save(net.state_dict(),
-                       ckpt_save_root+"/model_{}_loss_{:.5f}.pth".format(curr_epoch, running_loss_m / count)
-                       )
+            torch.save(net.module.state_dict(),
+                    ckpt_save_root+"/model_{}_loss_{:.5f}.pth".format(curr_epoch, running_loss_m / count)
+            )
 
 
 if __name__ == '__main__':

@@ -5,6 +5,7 @@ from imageio import imwrite, imread
 import os
 import torch.nn.functional as F
 import cv2
+
 def img_normalize(image):
     if len(image.shape)==2:
         channel = (image[:, :, np.newaxis] - 0.485) / 0.229
@@ -15,66 +16,109 @@ def img_normalize(image):
     return image
 
 
-class TrainDataset(Dataset):
-    def __init__(self, paths):
-        self.image = []
-        self.label = []
-        self.count={}
-        for path in paths:
-            self.list = os.listdir(os.path.join(path, "Imgs"))
-            for i in self.list:
-                self.image.append(os.path.join(path, "Imgs", i))
-                self.label.append(os.path.join(path, "GT", i.split(".")[0] + ".png"))
-        print("Datasetsize:", len(self.image))
-    def __len__(self):
-        return len(self.image)
-    def __getitem__(self, item):
-        img = imread(self.image[item]).astype(np.float32)/255.
-        label = imread(self.label[item]).astype(np.float32)/255.
-        ration = np.random.rand()
-        if ration<0.25:
-            img = cv2.flip(img, 1)
-            label = cv2.flip(label, 1)
-        elif ration<0.5:
-            img = cv2.flip(img, 0)
-            label = cv2.flip(label, 0)
-        elif ration<0.75:
-            img = cv2.flip(img, -1)
-            label = cv2.flip(label, -1)
-        if len(label.shape)==3:
-            label=label[:,:,0]
-        label=label[:,:,np.newaxis]
-        return {"img": torch.from_numpy(img_normalize(img)).permute(2,0,1).unsqueeze(0),
-                "label":torch.from_numpy(label).permute(2,0,1).unsqueeze(0)}
+# class TrainDataset(Dataset):
+#     def __init__(self, paths):
+#         self.image = []
+#         self.label = []
+#         self.count={}
+#         for path in paths:
+#             self.list = os.listdir(os.path.join(path, "Imgs"))
+#             for i in self.list:
+#                 self.image.append(os.path.join(path, "Imgs", i))
+#                 self.label.append(os.path.join(path, "GT", i.split(".")[0] + ".png"))
+#         print("Datasetsize:", len(self.image))
+#     def __len__(self):
+#         return len(self.image)
+#     def __getitem__(self, item):
+#         img = imread(self.image[item]).astype(np.float32)/255.
+#         label = imread(self.label[item]).astype(np.float32)/255.
+#         ration = np.random.rand()
+#         if ration<0.25:
+#             img = cv2.flip(img, 1)
+#             label = cv2.flip(label, 1)
+#         elif ration<0.5:
+#             img = cv2.flip(img, 0)
+#             label = cv2.flip(label, 0)
+#         elif ration<0.75:
+#             img = cv2.flip(img, -1)
+#             label = cv2.flip(label, -1)
+#         if len(label.shape)==3:
+#             label=label[:,:,0]
+#         label=label[:,:,np.newaxis]
+#         return {"img": torch.from_numpy(img_normalize(img)).permute(2,0,1).unsqueeze(0),
+#                 "label":torch.from_numpy(label).permute(2,0,1).unsqueeze(0)}
 
-class TestDataset(Dataset):
-    def __init__(self, path, size):
-        self.size=size
-        self.image = []
-        self.label = []
-        self.list = os.listdir(os.path.join(path, "Imgs"))
-        self.count={}
-        for i in self.list:
-            self.image.append(os.path.join(path, "Imgs", i))
-            self.label.append(os.path.join(path, "GT", i.split(".")[0]+".png"))
+# class TestDataset(Dataset):
+#     def __init__(self, path, size):
+#         self.size=size
+#         self.image = []
+#         self.label = []
+#         self.list = os.listdir(os.path.join(path, "Imgs"))
+#         self.count={}
+#         for i in self.list:
+#             self.image.append(os.path.join(path, "Imgs", i))
+#             self.label.append(os.path.join(path, "GT", i.split(".")[0]+".png"))
+#     def __len__(self):
+#         return len(self.image)
+#     def __getitem__(self, item):
+#         img = imread(self.image[item]).astype(np.float32)/255.
+#         label = imread(self.label[item]).astype(np.float32)/255.
+#         if len(label.shape)==2:
+#             label=label[:,:,np.newaxis]
+#         return {"img": F.interpolate(torch.from_numpy(img_normalize(img)).permute(2,0,1).unsqueeze(0), (self.size, self.size), mode='bilinear', align_corners=True).squeeze(0),
+#                 "label": torch.from_numpy(label).permute(2,0,1),
+#                 'name': self.label[item]}
+
+# def my_collate_fn(batch):
+#     size = 384
+#     imgs=[]
+#     labels=[]
+#     for item in batch:
+#         imgs.append(F.interpolate(item['img'], (size, size), mode='bilinear'))
+#         labels.append(F.interpolate(item['label'], (size, size), mode='bilinear'))
+#     return {'img': torch.cat(imgs, 0),
+#             'label': torch.cat(labels, 0)}
+
+
+
+class TrainDataset(Dataset):
+    def __init__(self, root):
+        self.img_dir = os.path.join(root,"images")
+        self.mask_dir = os.path.join(root,"masks")
+        self.files = sorted(os.listdir(self.img_dir))
+
     def __len__(self):
-        return len(self.image)
-    def __getitem__(self, item):
-        img = imread(self.image[item]).astype(np.float32)/255.
-        label = imread(self.label[item]).astype(np.float32)/255.
-        if len(label.shape)==2:
-            label=label[:,:,np.newaxis]
-        return {"img": F.interpolate(torch.from_numpy(img_normalize(img)).permute(2,0,1).unsqueeze(0), (self.size, self.size), mode='bilinear', align_corners=True).squeeze(0),
-                "label": torch.from_numpy(label).permute(2,0,1),
-                'name': self.label[item]}
+        return len(self.files)
+
+    def __getitem__(self, idx):
+
+        img = np.load(os.path.join(self.img_dir,self.files[idx])).astype(np.float32)
+        mask = np.load(os.path.join(self.mask_dir,self.files[idx])).astype(np.float32)
+
+        # channel-wise normalization (VERY important)
+        for c in range(4):
+            m = img[:,:,c].mean()
+            s = img[:,:,c].std() + 1e-6
+            img[:,:,c] = (img[:,:,c] - m)/s
+
+        img = torch.from_numpy(img).permute(2,0,1)
+        mask = torch.from_numpy(mask).unsqueeze(0)
+
+        return {"img":img,"label":mask}
+    
 
 def my_collate_fn(batch):
-    size = 384
-    imgs=[]
-    labels=[]
-    for item in batch:
-        imgs.append(F.interpolate(item['img'], (size, size), mode='bilinear'))
-        labels.append(F.interpolate(item['label'], (size, size), mode='bilinear'))
-    return {'img': torch.cat(imgs, 0),
-            'label': torch.cat(labels, 0)}
+    imgs = torch.stack([b["img"] for b in batch])
+    labels = torch.stack([b["label"] for b in batch])
+    return {"img":imgs,"label":labels}
 
+def loss_fn(preds, gt):
+
+    p4 = preds[-1]
+
+    bce = F.binary_cross_entropy(p4, gt)
+
+    inter = (p4*gt).sum()
+    dice = 1 - (2*inter+1)/(p4.sum()+gt.sum()+1)
+
+    return bce + 0.7*dice
