@@ -836,22 +836,8 @@ def deit_base_distilled_patch16_384(pretrained=False, **kwargs):
     model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, drop_path_rate=0.1, **kwargs)
     # model = _create_vision_transformer(
     #     'deit_base_distilled_patch16_384', pretrained=pretrained, distilled=True, **model_kwargs)
-    # model = VisionTransformer(img_size=384, patch_size=16, embed_dim=768, depth=12, num_heads=12, drop_path_rate=0.1, distilled=True,
-    #                           norm_layer=nn.LayerNorm, act_layer=nn.GELU)
-    
-    model = VisionTransformer(
-            img_size=256,
-            patch_size=16,
-            in_chans=4,
-            embed_dim=768,
-            depth=12,
-            num_heads=12,
-            drop_path_rate=0.1,
-            distilled=True,
-            norm_layer=nn.LayerNorm,
-            act_layer=nn.GELU
-    )
-
+    model = VisionTransformer(img_size=384, patch_size=16, embed_dim=768, depth=12, num_heads=12, drop_path_rate=0.1, distilled=True,
+                              norm_layer=nn.LayerNorm, act_layer=nn.GELU)
     return model
 
 

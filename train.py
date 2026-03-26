@@ -35,65 +35,80 @@ def parse_args():
     args = parser.parse_args()
     return args
 
-def dice_score(pred, gt):
+
+def dice_score(pred, mask):
 
     pred = (pred > 0.5).float()
 
-    inter = (pred * gt).sum()
-    union = pred.sum() + gt.sum()
+    inter = (pred * mask).sum()
+    union = pred.sum() + mask.sum()
 
     dice = (2 * inter + 1e-6) / (union + 1e-6)
-
     return dice.item()
-                                      
+
+def validate(net, loader, rank):
+
+    net.eval()
+    dices = []
+
+    with torch.no_grad():
+        for data in loader:
+
+            img = data["img"].cuda(rank)
+            mask = data["label"].cuda(rank)
+
+            out = net(img)[-1]
+
+            d = dice_score(out, mask)
+            dices.append(d)
+
+    net.train()
+
+    return sum(dices) / len(dices)
+                                     
 def main(args):
     # DDP setting
-    # if "WORLD_SIZE" in os.environ:
-    #     args.world_size = int(os.environ["WORLD_SIZE"])
-    # args.distributed = args.world_size > 1
-    # ngpus_per_node = torch.cuda.device_count()
+    if "WORLD_SIZE" in os.environ:
+        args.world_size = int(os.environ["WORLD_SIZE"])
+    args.distributed = args.world_size > 1
+    ngpus_per_node = torch.cuda.device_count()
 
-    # if args.distributed:
-    #     if args.local_rank != -1: # for torch.distributed.launch
-    #         args.rank = args.local_rank
-    #         args.gpu = args.local_rank
-    #     elif 'SLURM_PROCID' in os.environ: # for slurm scheduler
-    #         args.rank = int(os.environ['SLURM_PROCID'])
-    #         args.gpu = args.rank % torch.cuda.device_count()
-    #         print("args.rank = {}; args.gpu = {}".format(args.rank, args.gpu))
-    #     dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
-    #                             world_size=args.world_size, rank=args.rank)
+    if args.distributed:
+        if args.local_rank != -1: # for torch.distributed.launch
+            args.rank = args.local_rank
+            args.gpu = args.local_rank
+        elif 'SLURM_PROCID' in os.environ: # for slurm scheduler
+            args.rank = int(os.environ['SLURM_PROCID'])
+            args.gpu = args.rank % torch.cuda.device_count()
+            print("args.rank = {}; args.gpu = {}".format(args.rank, args.gpu))
+        dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
+                                world_size=args.world_size, rank=args.rank)
 
     # suppress printing if not on master gpu
-    # if args.rank!=0:
-    #     def print_pass(*args):
-    #         pass
-    #     builtins.print = print_pass
+    if args.rank!=0:
+        def print_pass(*args):
+            pass
+        builtins.print = print_pass
        
     ### model ###
-    device = "cuda"
-
-    net = FSPNet_model.Model(args.pretrain, img_size=256).to(device)
-
-    print("Single GPU training started")
-    # net = FSPNet_model.Model(args.pretrain, img_size=256)
-    # net = torch.nn.SyncBatchNorm.convert_sync_batchnorm(net)
-    # if args.distributed:
-    #     # For multiprocessing distributed, DistributedDataParallel constructor
-    #     # should always set the single device scope, otherwise,
-    #     # DistributedDataParallel will use all available devices.
-    #     os.system("nvidia-smi")
-    #     if args.gpu is not None:
-    #         torch.cuda.set_device(args.gpu)
-    #         net.cuda(args.gpu)
-    #         net = torch.nn.parallel.DistributedDataParallel(net, device_ids=[args.gpu])
-    #         model_without_ddp = net.module
-    #     else:
-    #         net.cuda()
-    #         net = torch.nn.parallel.DistributedDataParallel(net)
-            # model_without_ddp = net.module
-    # else:
-    #     raise NotImplementedError("Only DistributedDataParallel is supported.")
+    net = FSPNet_model.Model(args.pretrain, img_size=384)
+    net = torch.nn.SyncBatchNorm.convert_sync_batchnorm(net)
+    if args.distributed:
+        # For multiprocessing distributed, DistributedDataParallel constructor
+        # should always set the single device scope, otherwise,
+        # DistributedDataParallel will use all available devices.
+        os.system("nvidia-smi")
+        if args.gpu is not None:
+            torch.cuda.set_device(args.gpu)
+            net.cuda(args.gpu)
+            net = torch.nn.parallel.DistributedDataParallel(net, device_ids=[args.gpu])
+            model_without_ddp = net.module
+        else:
+            net.cuda()
+            net = torch.nn.parallel.DistributedDataParallel(net)
+            model_without_ddp = net.module
+    else:
+        raise NotImplementedError("Only DistributedDataParallel is supported.")
         
     ### optimizer ###
     
@@ -123,53 +138,60 @@ def main(args):
 
     
     ### data ###
-    # Dir = [args.path]
+    Dir = [args.path]
     # Dataset = dataset.TrainDataset(Dir)
+    train_dataset = dataset.TrainDataset(args.path)
+    val_path = args.path.replace("train", "val")
+    val_dataset = dataset.TrainDataset(val_path)
+
+    print("Train length :", len(train_dataset))
+    print("Val length   :", len(val_dataset))
+
     # Datasampler = torch.utils.data.distributed.DistributedSampler(Dataset, shuffle=True)
     # Dataloader = DataLoader(Dataset, batch_size=args.batch_size_per_gpu, num_workers=args.batch_size_per_gpu, collate_fn=dataset.my_collate_fn, sampler=Datasampler, drop_last=True)
-    
-    ### data ###
+    train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset, shuffle=True)
+    val_sampler = torch.utils.data.distributed.DistributedSampler(val_dataset, shuffle=False)
 
-    train_root = os.path.join(args.path, "train")
-    val_root   = os.path.join(args.path, "val")
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=args.batch_size_per_gpu,
+        num_workers=4,
+        sampler=train_sampler,
+        collate_fn=dataset.my_collate_fn,
+        drop_last=True,
+    )
 
-    train_set = dataset.TrainDataset(train_root)
-    val_set   = dataset.TrainDataset(val_root)
-
-    # train_sampler = torch.utils.data.distributed.DistributedSampler(train_set, shuffle=True)
-    # val_sampler   = torch.utils.data.distributed.DistributedSampler(val_set, shuffle=False)
-    train_sampler = None
-    val_sampler = None
-
-    train_loader = DataLoader(train_set,
-                            batch_size=args.batch_size_per_gpu,
-                            num_workers=4,
-                            collate_fn=dataset.my_collate_fn,
-                            sampler=train_sampler,
-                            drop_last=True)
-
-    val_loader = DataLoader(val_set,
-                            batch_size=args.batch_size_per_gpu,
-                            num_workers=4,
-                            collate_fn=dataset.my_collate_fn,
-                            sampler=val_sampler,
-                            drop_last=False)
-    
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=1,
+        num_workers=2,
+        sampler=val_sampler,
+        collate_fn=dataset.my_collate_fn,
+    )
     # torch.backends.cudnn.benchmark = True
-    
+    if args.rank == 0:
+        b = next(iter(train_loader))
+        print("\n===== SANITY CHECK =====")
+        print("Input batch :", b["img"].shape)
+        print("Mask batch :", b["label"].shape)
+        print("Img min/max :", b["img"].min().item(), b["img"].max().item())
+        print("Mask unique :", torch.unique(b["label"]))
+        print("========================\n")
+
     ### main loop ###
-    best_dice = 0
+    best_dice = -1
     patience = 50
-    epochs_no_improve = 0
+    no_improve = 0
+
     star_time=time.time()
-    for curr_epoch in range(0, 1000):
+    for curr_epoch in range(0, 201):
         
         if curr_epoch==100 or curr_epoch==150:
             for param_group in optimizer.param_groups:
                 param_group['lr']= param_group['lr']*0.1
                 print("Learning rate:", param_group['lr'])
         # Datasampler.set_epoch(curr_epoch)
-        # train_sampler.set_epoch(curr_epoch)
+        train_sampler.set_epoch(curr_epoch)
         net.train()
         running_loss_all, running_loss_m = 0., 0.
         count = 0
@@ -186,72 +208,36 @@ def main(args):
             running_loss_m += m_loss.item()
             if count % 20 == 0 and args.rank == 0:
                 print("Epoch:{}, Iter:{}, all_loss:{:.5f}, main_loss:{:.5f}".format(curr_epoch, count, running_loss_all / count, running_loss_m / count))
-
-        ################ VALIDATION ################
-        # val_sampler.set_epoch(curr_epoch)
-        net.eval()
-
-        dice_total = 0
-        val_count = 0
-
-        with torch.no_grad():
-            for data in val_loader:
-
-                img = data['img'].to(device)
-                label = data['label'].to(device)
-
-                out = net(img)
-
-                pred = out[-1]
-
-                dice = dice_score(pred, label)
-
-                dice_total += dice
-                val_count += 1
-
-        val_dice = dice_total / val_count
-
-        # val_dice_tensor = torch.tensor(val_dice).cuda(args.rank)
-        # dist.all_reduce(val_dice_tensor)
-        # val_dice = val_dice_tensor.item() / args.world_size
-        val_dice = dice_total / val_count
+        
+        # ===== VALIDATION =====
+        dist.barrier()
+        val_dice = validate(net, val_loader, args.rank)
+        dist.barrier()
 
         if args.rank == 0:
-            print(f"Epoch {curr_epoch} VAL Dice = {val_dice:.4f}")
+            print("Epoch:", curr_epoch, " Val Dice:", val_dice)
 
-        ############ EARLY STOP ############
+            if val_dice > best_dice:
+                best_dice = val_dice
+                no_improve = 0
 
-        if curr_epoch < 20:
-            continue
+                torch.save(net.state_dict(), "best_model.pth")
+                print("✅ BEST MODEL SAVED")
 
-        if val_dice > best_dice:
+            else:
+                no_improve += 1
+                print("No improve count:", no_improve)
 
-            best_dice = val_dice
-            epochs_no_improve = 0
-
-            if args.rank == 0:
-                print("Best model updated! Best dice:", best_dice)
-
-                torch.save(net.state_dict(),
-                        f"/path/best_model_{best_dice:.4f}.pth")
-
-        else:
-            epochs_no_improve += 1
-
-        if epochs_no_improve >= patience:
-
-            if args.rank == 0:
-                print("EARLY STOPPING TRIGGERED")
-
-            break
-
+            if no_improve >= patience:
+                print("🛑 EARLY STOPPING TRIGGERED")
+                return
         if args.rank == 0 and curr_epoch % 2 == 0:
             ckpt_save_root = "/path_to_ckpt_save_root/ckpt_save"
             if not os.path.exists(ckpt_save_root):
                 os.mkdir(ckpt_save_root)
             torch.save(net.state_dict(),
-                    ckpt_save_root+"/model_{}_loss_{:.5f}.pth".format(curr_epoch, running_loss_m / count)
-            )
+                       ckpt_save_root+"/model_{}_loss_{:.5f}.pth".format(curr_epoch, running_loss_m / count)
+                       )
 
 
 if __name__ == '__main__':

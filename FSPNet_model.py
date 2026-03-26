@@ -164,16 +164,27 @@ class OutPut(nn.Module):
     def forward(self, feat):
         return self.out(feat)
 
+class InputAdapter(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.proj = nn.Sequential(
+            nn.Conv2d(4, 16, 3, padding=1, bias=False),
+            nn.BatchNorm2d(16),
+            nn.ReLU(inplace=True),
 
+            nn.Conv2d(16, 3, 1, bias=False)
+        )
+
+    def forward(self, x):
+        return self.proj(x)
+    
 class Model(nn.Module):
-    # def __init__(self, ckpt, img_size=384):
-    def __init__(self, ckpt=None, img_size=256):
+    def __init__(self, ckpt, img_size=384):
         super(Model, self).__init__()
-        # self.encoder = vit.deit_base_distilled_patch16_384()
-        self.encoder = vit.deit_base_distilled_patch16_384(
-                    img_size=256,
-                    in_chans=4
-            )
+
+        self.input_adapter = InputAdapter()
+
+        self.encoder = vit.deit_base_distilled_patch16_384()
         if ckpt is not None:
             ckpt = torch.load(ckpt, map_location='cpu')
             msg = self.encoder.load_state_dict(ckpt["model"], strict=False)
@@ -248,7 +259,9 @@ class Model(nn.Module):
     def forward(self, img):
         # B Seq
         B, C, H, W = img.size()
-        x = self.encoder(img)  # list 12x[8,576,768]
+        # x = self.encoder(img)  # list 12x[8,576,768]
+        img = self.input_adapter(img)
+        x = self.encoder(img)
         feature = self.group_converter_fn(x)
         gpd_outs = self.group_pyramid_decode(feature)
         return self.pred_out(gpd_outs)

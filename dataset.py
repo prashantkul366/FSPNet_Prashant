@@ -1,19 +1,18 @@
-from torch.utils.data import Dataset
-import torch
-import numpy as np
-from imageio import imwrite, imread
-import os
-import torch.nn.functional as F
-import cv2
-
-def img_normalize(image):
-    if len(image.shape)==2:
-        channel = (image[:, :, np.newaxis] - 0.485) / 0.229
-        image = np.concatenate([channel,channel,channel], axis=2)
-    else:
-        image = (image-np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape((1, 1, 3)))\
-                /np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape((1, 1, 3))
-    return image
+# from torch.utils.data import Dataset
+# import torch
+# import numpy as np
+# from imageio import imwrite, imread
+# import os
+# import torch.nn.functional as F
+# import cv2
+# # def img_normalize(image):
+# #     if len(image.shape)==2:
+# #         channel = (image[:, :, np.newaxis] - 0.485) / 0.229
+# #         image = np.concatenate([channel,channel,channel], axis=2)
+# #     else:
+# #         image = (image-np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape((1, 1, 3)))\
+# #                 /np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape((1, 1, 3))
+# #     return image
 
 
 # class TrainDataset(Dataset):
@@ -27,11 +26,19 @@ def img_normalize(image):
 #                 self.image.append(os.path.join(path, "Imgs", i))
 #                 self.label.append(os.path.join(path, "GT", i.split(".")[0] + ".png"))
 #         print("Datasetsize:", len(self.image))
+
 #     def __len__(self):
 #         return len(self.image)
+    
 #     def __getitem__(self, item):
-#         img = imread(self.image[item]).astype(np.float32)/255.
-#         label = imread(self.label[item]).astype(np.float32)/255.
+#         # img = imread(self.image[item]).astype(np.float32)/255.
+#         img = np.load(self.image[item]).astype(np.float32)
+#         # label = imread(self.label[item]).astype(np.float32)/255.
+#         label = np.load(self.label[item]).astype(np.float32)
+
+#         img = torch.from_numpy(img).permute(2,0,1)   # 4,H,W
+#         label = torch.from_numpy(label).unsqueeze(0) # 1,H,W
+
 #         ration = np.random.rand()
 #         if ration<0.25:
 #             img = cv2.flip(img, 1)
@@ -45,7 +52,11 @@ def img_normalize(image):
 #         if len(label.shape)==3:
 #             label=label[:,:,0]
 #         label=label[:,:,np.newaxis]
-#         return {"img": torch.from_numpy(img_normalize(img)).permute(2,0,1).unsqueeze(0),
+
+#         img = F.interpolate(img.unsqueeze(0), (384,384), mode='bilinear').squeeze(0)
+#         label = F.interpolate(label.unsqueeze(0), (384,384), mode='nearest').squeeze(0)
+
+#         return {"img": torch.from_numpy(img).permute(2,0,1).unsqueeze(0),
 #                 "label":torch.from_numpy(label).permute(2,0,1).unsqueeze(0)}
 
 # class TestDataset(Dataset):
@@ -80,45 +91,69 @@ def img_normalize(image):
 #             'label': torch.cat(labels, 0)}
 
 
+from torch.utils.data import Dataset
+import torch
+import numpy as np
+import os
+import torch.nn.functional as F
+
 
 class TrainDataset(Dataset):
+
     def __init__(self, root):
-        self.img_dir = os.path.join(root,"images")
-        self.mask_dir = os.path.join(root,"masks")
+
+        self.img_dir = os.path.join(root, "images")
+        self.mask_dir = os.path.join(root, "masks")
+
         self.files = sorted(os.listdir(self.img_dir))
+
+        print("===================================")
+        print("TRAIN DATASET INITIALIZED")
+        print("Image path :", self.img_dir)
+        print("Mask path  :", self.mask_dir)
+        print("Dataset size :", len(self.files))
+        print("===================================")
 
     def __len__(self):
         return len(self.files)
 
     def __getitem__(self, idx):
 
-        img = np.load(os.path.join(self.img_dir,self.files[idx])).astype(np.float32)
-        mask = np.load(os.path.join(self.mask_dir,self.files[idx])).astype(np.float32)
+        img_path = os.path.join(self.img_dir, self.files[idx])
+        mask_path = os.path.join(self.mask_dir, self.files[idx])
 
-        # channel-wise normalization (VERY important)
-        for c in range(4):
-            m = img[:,:,c].mean()
-            s = img[:,:,c].std() + 1e-6
-            img[:,:,c] = (img[:,:,c] - m)/s
+        img = np.load(img_path).astype(np.float32)     # H W 4
+        mask = np.load(mask_path).astype(np.float32)   # H W
 
-        img = torch.from_numpy(img).permute(2,0,1)
-        mask = torch.from_numpy(mask).unsqueeze(0)
+        # ---------- SANITY PRINT (only first sample) ----------
+        if idx == 0:
+            print("\n===== RAW SAMPLE CHECK =====")
+            print("Image shape :", img.shape)
+            print("Image min/max :", img.min(), img.max())
+            print("Mask shape :", mask.shape)
+            print("Mask unique :", np.unique(mask))
+            print("=============================\n")
 
-        return {"img":img,"label":mask}
+        # ---------- normalize hillshade ----------
+        img = (img - img.mean()) / (img.std() + 1e-6)
+
+        # ---------- to tensor ----------
+        img = torch.from_numpy(img).permute(2,0,1)   # 4 H W
+        mask = torch.from_numpy(mask).unsqueeze(0)   # 1 H W
+
+        # ---------- resize ----------
+        img = F.interpolate(img.unsqueeze(0), (384,384), mode='bilinear').squeeze(0)
+        mask = F.interpolate(mask.unsqueeze(0), (384,384), mode='nearest').squeeze(0)
+
+        return {"img": img, "label": mask}
     
 
 def my_collate_fn(batch):
-    imgs = torch.stack([b["img"] for b in batch])
-    labels = torch.stack([b["label"] for b in batch])
-    return {"img":imgs,"label":labels}
 
-def loss_fn(preds, gt):
+    imgs = torch.stack([item["img"] for item in batch])
+    labels = torch.stack([item["label"] for item in batch])
 
-    p4 = preds[-1]
-
-    bce = F.binary_cross_entropy(p4, gt)
-
-    inter = (p4*gt).sum()
-    dice = 1 - (2*inter+1)/(p4.sum()+gt.sum()+1)
-
-    return bce + 0.7*dice
+    return {
+        "img": imgs,
+        "label": labels
+    }
