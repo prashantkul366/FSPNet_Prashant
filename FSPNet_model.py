@@ -192,7 +192,21 @@ class Model(nn.Module):
         self.encoder = vit.deit_base_distilled_patch16_384()
         if ckpt is not None:
             ckpt = torch.load(ckpt, map_location='cpu')
-            msg = self.encoder.load_state_dict(ckpt["model"], strict=False)
+            state_dict = ckpt["model"]
+
+            # remove classification head weights
+            state_dict.pop("head.weight", None)
+            state_dict.pop("head.bias", None)
+            state_dict.pop("head_dist.weight", None)
+            state_dict.pop("head_dist.bias", None)
+
+            msg = self.encoder.load_state_dict(state_dict, strict=True)
+
+            print("======== PRETRAIN LOADED CLEAN ========")
+            print(msg)
+
+            # ckpt = torch.load(ckpt, map_location='cpu')
+            # msg = self.encoder.load_state_dict(ckpt["model"], strict=False)
             
             print("====================================")
             print(msg)
