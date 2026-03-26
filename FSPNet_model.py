@@ -168,7 +168,11 @@ class InputAdapter(nn.Module):
     def __init__(self):
         super().__init__()
         self.proj = nn.Sequential(
-            nn.Conv2d(4, 16, 3, padding=1, bias=False),
+            nn.Conv2d(4, 32, 3, padding=1, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+
+            nn.Conv2d(32, 16, 3, padding=1, bias=False),
             nn.BatchNorm2d(16),
             nn.ReLU(inplace=True),
 
@@ -178,6 +182,7 @@ class InputAdapter(nn.Module):
     def forward(self, x):
         return self.proj(x)
     
+
 class Model(nn.Module):
     def __init__(self, ckpt, img_size=384):
         super(Model, self).__init__()
@@ -188,6 +193,7 @@ class Model(nn.Module):
         if ckpt is not None:
             ckpt = torch.load(ckpt, map_location='cpu')
             msg = self.encoder.load_state_dict(ckpt["model"], strict=False)
+            
             print("====================================")
             print(msg)
 
@@ -262,6 +268,8 @@ class Model(nn.Module):
         # x = self.encoder(img)  # list 12x[8,576,768]
         img = self.input_adapter(img)
         x = self.encoder(img)
+        if isinstance(x, tuple):
+            x = list(x)
         feature = self.group_converter_fn(x)
         gpd_outs = self.group_pyramid_decode(feature)
         return self.pred_out(gpd_outs)
