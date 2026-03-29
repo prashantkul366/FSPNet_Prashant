@@ -7,6 +7,8 @@ import FSPNet_model
 import loss
 import os
 
+from PFNet import PFNet
+
 
 # ---------- Dice ----------
 def dice_score(pred, mask):
@@ -39,11 +41,85 @@ def dice_score(pred, mask):
 
 #     model.train()
 #     return sum(dices)/len(dices)
+
+
+def compute_metrics(pred, mask):
+
+    pred = (pred > 0.5).float()
+
+    TP = (pred * mask).sum()
+    TN = ((1 - pred) * (1 - mask)).sum()
+    FP = (pred * (1 - mask)).sum()
+    FN = ((1 - pred) * mask).sum()
+
+    eps = 1e-6
+
+    dice = (2*TP + eps) / (2*TP + FP + FN + eps)
+    iou  = (TP + eps) / (TP + FP + FN + eps)
+
+    precision = (TP + eps) / (TP + FP + eps)
+    recall    = (TP + eps) / (TP + FN + eps)   # sensitivity
+
+    specificity = (TN + eps) / (TN + FP + eps)
+    accuracy    = (TP + TN + eps) / (TP + TN + FP + FN + eps)
+
+    return {
+        "dice": dice.item(),
+        "iou": iou.item(),
+        "precision": precision.item(),
+        "recall": recall.item(),
+        "specificity": specificity.item(),
+        "accuracy": accuracy.item()
+    }
+
+
+# def validate(model, loader):
+
+#     model.eval()
+
+#     dices = []
+
+#     print("\n------ VALIDATION START ------")
+
+#     with torch.no_grad():
+
+#         for i, b in enumerate(loader):
+
+#             img = b["img"].cuda(non_blocking=True)
+#             mask = b["label"].cuda(non_blocking=True)
+
+#             out = model(img)[-1]
+#             out = torch.sigmoid(out) # For PFNet, since it outputs raw logits.   
+#             d = dice_score(out, mask)
+
+#             dices.append(d.item())
+
+#             if i % 50 == 0:
+#                 print(
+#                     f"Val iter {i}/{len(loader)}  "
+#                     f"dice {d.item():.4f}  "
+#                     f"pred_min {out.min().item():.3f}  "
+#                     f"pred_max {out.max().item():.3f}"
+#                 )
+
+#     mean_dice = sum(dices)/len(dices)
+
+#     print("------ VALIDATION END ------")
+#     print(f"Mean Dice : {mean_dice:.4f}\n")
+
+#     model.train()
+
+#     return mean_dice
+
+
 def validate(model, loader):
 
     model.eval()
 
-    dices = []
+    all_metrics = {
+        "dice": [], "iou": [], "precision": [],
+        "recall": [], "specificity": [], "accuracy": []
+    }
 
     print("\n------ VALIDATION START ------")
 
@@ -55,27 +131,31 @@ def validate(model, loader):
             mask = b["label"].cuda(non_blocking=True)
 
             out = model(img)[-1]
+            out = torch.sigmoid(out)
 
-            d = dice_score(out, mask)
+            m = compute_metrics(out, mask)
 
-            dices.append(d.item())
+            for k in all_metrics:
+                all_metrics[k].append(m[k])
 
             if i % 50 == 0:
                 print(
-                    f"Val iter {i}/{len(loader)}  "
-                    f"dice {d.item():.4f}  "
-                    f"pred_min {out.min().item():.3f}  "
-                    f"pred_max {out.max().item():.3f}"
+                    f"Val {i}/{len(loader)} "
+                    f"Dice {m['dice']:.4f} IoU {m['iou']:.4f}"
                 )
 
-    mean_dice = sum(dices)/len(dices)
+    # mean metrics
+    mean_metrics = {k: sum(v)/len(v) for k, v in all_metrics.items()}
 
     print("------ VALIDATION END ------")
-    print(f"Mean Dice : {mean_dice:.4f}\n")
+    print("\n📊 Metrics:")
+    for k, v in mean_metrics.items():
+        print(f"{k:12s}: {v:.4f}")
 
     model.train()
 
-    return mean_dice
+    return mean_metrics
+
 
 def main():
 
@@ -122,10 +202,17 @@ def main():
     # ---------- model ----------
     print("Loading model...")
 
-    model = FSPNet_model.Model(
-        "/content/drive/MyDrive/Prashant/Pretrain/deit_base_distilled_patch16_384.pth",
-        img_size=384
+    # model = FSPNet_model.Model(
+    #     "/content/drive/MyDrive/Prashant/Pretrain/deit_base_distilled_patch16_384.pth",
+    #     img_size=384
+    # )
+    # print("FSPNet Model loaded successfully")
+
+    model = PFNet(
+        backbone_path="/content/drive/MyDrive/Prashant/Pretrain/resnet50-19c8e357.pth"
     )
+    print("PFNET Model loaded successfully")
+    model = model.cuda()
 
     total_params = sum(p.numel() for p in model.parameters())/1e6
     train_params = sum(p.numel() for p in model.parameters() if p.requires_grad)/1e6
@@ -135,7 +222,8 @@ def main():
 
     model = model.cuda()
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-5, weight_decay=1e-4)
+    # optimizer = torch.optim.AdamW(model.parameters(), lr=3e-5, weight_decay=1e-4)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-4)
 
     print("Optimizer : AdamW")
     print("LR        :", 3e-5)
@@ -158,12 +246,13 @@ def main():
 
             out = model(img)
 
-            all_loss, main_loss = loss.multi_bce(out, mask)
+            # all_loss, main_loss = loss.multi_bce(out, mask)   # For FSPNet
+            all_loss, main_loss = loss.multi_structure_loss(out, mask)  # For PFNet
 
             optimizer.zero_grad()
             all_loss.backward()
 
-            torch.nn.utils.clip_grad_norm_(model.parameters(),1.0)
+            # torch.nn.utils.clip_grad_norm_(model.parameters(),1.0)
 
             optimizer.step()
 
@@ -172,7 +261,9 @@ def main():
             if i % 50 == 0:
                 print(f"Epoch {epoch}  Iter {i}/{len(train_loader)}  loss {main_loss.item():.4f}")
 
-        val_dice = validate(model, val_loader)
+        val_metrics = validate(model, val_loader)
+        val_dice = val_metrics["dice"]
+        # val_dice = validate(model, val_loader)
 
         epoch_time = time.time() - t0
 
@@ -190,6 +281,9 @@ def main():
 
             print("⭐ BEST MODEL SAVED")
             print("⭐ Best Dice :", best_dice)
+            print("\n🔥 BEST MODEL METRICS:")
+            for k, v in val_metrics.items():
+                print(f"{k:12s}: {v:.4f}")
 
         else:
             no_improve += 1

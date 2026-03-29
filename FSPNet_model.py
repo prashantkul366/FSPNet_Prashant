@@ -183,6 +183,8 @@ class InputAdapter(nn.Module):
         return self.proj(x)
     
 
+    
+
 class Model(nn.Module):
     def __init__(self, ckpt, img_size=384):
         super(Model, self).__init__()
