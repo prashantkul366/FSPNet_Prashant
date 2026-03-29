@@ -222,11 +222,12 @@ def main():
 
     model = model.cuda()
 
+    lr = 1e-4
     # optimizer = torch.optim.AdamW(model.parameters(), lr=3e-5, weight_decay=1e-4)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-4)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
 
     print("Optimizer : AdamW")
-    print("LR        :", 3e-5)
+    print("LR        :", lr)
 
     best_dice = 0
     patience = 50

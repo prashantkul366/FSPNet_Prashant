@@ -77,9 +77,9 @@ class IOU(torch.nn.Module):
 ###################################################################
 # #################### structure loss #############################
 ###################################################################
-class structure_loss(torch.nn.Module):
+class StructureLoss(torch.nn.Module):
     def __init__(self):
-        super(structure_loss, self).__init__()
+        super(StructureLoss, self).__init__()
 
     def _structure_loss(self, pred, mask):
         weit = 1 + 5 * torch.abs(F.avg_pool2d(mask, kernel_size=31, stride=1, padding=15) - mask)
